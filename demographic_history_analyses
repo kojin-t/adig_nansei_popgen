@@ -1,0 +1,181 @@
+#!/bin/bash
+
+#Firstly, conduct SNP calling using GATK with -allSites option to obtain data for monomorphic sites.
+#Here, I will show an example for one location, Ayamaru.
+
+java -Xmx80g -jar GenomeAnalysisTK.jar \
+-T GenotypeGVCFs \
+-R genome.fa \
+--variant AAya1_rewrite.g.vcf \
+--variant AAya10_rewrite.g.vcf \
+--variant AAya11_rewrite.g.vcf \
+--variant AAya12_rewrite.g.vcf \
+--variant AAya13_rewrite.g.vcf \
+--variant AAya14_rewrite.g.vcf \
+--variant AAya15_rewrite.g.vcf \
+--variant AAya2_rewrite.g.vcf \
+--variant AAya3_rewrite.g.vcf \
+--variant AAya4_rewrite.g.vcf \
+--variant AAya5_rewrite.g.vcf \
+--variant AAya6_rewrite.g.vcf \
+--variant AAya7_rewrite.g.vcf \
+--variant AAya8_rewrite.g.vcf \
+--variant AAya9_rewrite.g.vcf \
+-allSites \
+-o aaya_allsites_combined.vcf
+
+#Filter Variants and monomorphic sites
+for i in $each_location
+do
+
+java -Xmx30g -jar GenomeAnalysisTK.jar \
+-T SelectVariants \
+-R genome.fa \
+-V ${i}_allsites_combined.vcf \
+-selectType SNP \
+-o ${i}_allsites_snp.vcf
+
+java -Xmx30g -jar GenomeAnalysisTK.jar \
+-T SelectVariants \
+-R genome.fa \
+-V ${i}_allsites_combined.vcf \
+-selectType NO_VARIATION \
+-o ${i}_allsites_novar.vcf
+
+java -Xmx35g -jar GenomeAnalysisTK.jar \
+-T VariantFiltration \
+-R genome.fa \
+-V ${i}_allsites_snp.vcf \
+-o ${i}_allsites_snp_RankSumed.vcf \
+--filterExpression 'MQRankSum < -12.5' --filterName 'LowMQRankSum' \
+--filterExpression 'ReadPosRankSum < -8.0' --filterName 'LowReadPosRankSum' 
+
+java -Xmx35g -jar GenomeAnalysisTK.jar \
+-T VariantFiltration \
+-R genome.fa \
+-V ${i}_allsites_snp_RankSumed.vcf \
+-o ${i}_allsites_snp_hdfiltered.vcf \
+--filterExpression 'QD < 2.0' --filterName 'LowQD' \
+--filterExpression 'FS > 60.0' --filterName 'HighFisherStrand' \
+--filterExpression 'MQ < 40.0' --filterName 'LowRMSMappingQuality' \
+--filterExpression 'SOR > 4.0' --filterName 'HighSOR' \
+--missingValuesInExpressionsShouldEvaluateAsFailing
+
+java -Xmx30g -jar GenomeAnalysisTK.jar \
+-T VariantFiltration \
+-R genome.fa \
+-V ${i}_allsites_snp_hdfiltered.vcf \
+-G_filter "DP < 10 || DP > 50" \
+-G_filterName "DP_10-50" \
+-o ${i}_allsites_dpfiltered10_snp.vcf
+
+java -Xmx30g -jar /lustre7/home/kinjo-kaiyoken/bin/GenomeAnalysisTK.jar \
+-T VariantFiltration \
+-R genome.fa \
+-V ${i}_allsites_novar.vcf \
+-G_filter "DP < 10 || DP > 50" \
+-G_filterName "DP_10-50" \
+-o ${i}_allsites_dpfiltered10_novar.vcf
+
+java -Xmx30g -jar /lustre7/home/kinjo-kaiyoken/bin/GenomeAnalysisTK.jar \
+-T SelectVariants \
+-R genome.fa \
+-V ${i}_allsites_dpfiltered10_snp.vcf \
+--setFilteredGtToNocall \
+--keepOriginalAC \
+-o ${i}_allsites_passed10_snp.vcf
+
+java -Xmx30g -jar /lustre7/home/kinjo-kaiyoken/bin/GenomeAnalysisTK.jar \
+-T SelectVariants \
+-R genome.fa \
+-V ${i}_allsites_dpfiltered10_novar.vcf \
+--setFilteredGtToNocall \
+--keepOriginalAC \
+-o ${i}_allsites_passed10_novar.vcf
+
+java -Xmx30g -jar /lustre7/home/kinjo-kaiyoken/bin/GenomeAnalysisTK.jar \
+-T SelectVariants \
+-R genome.fa \
+-V ${i}_allsites_passed10_snp.vcf \
+--excludeFiltered \
+-o ${i}_allsites_full10_snp.vcf
+
+java -Xmx30g -jar /lustre7/home/kinjo-kaiyoken/bin/GenomeAnalysisTK.jar \
+-T SelectVariants \
+-R genome.fa \
+-V ${i}_allsites_passed10_novar.vcf \
+--excludeFiltered \
+-o ${i}_allsites_full10_novar.vcf
+
+rm ${i}_allsites_passed10_novar.vcf
+
+sed "/^##FORMAT=<ID=AD/{s/,[^,]*/,Number=2/1}" ${i}_allsites_full10_snp.vcf > ${i}_allsites_converted10_snp.vcf
+
+sed "/^##FORMAT=<ID=AD/{s/,[^,]*/,Number=2/1}" ${i}_allsites_full10_novar.vcf > ${i}_allsites_converted10_novar.vcf
+
+bcftools annotate -Ou -x INFO ${i}_allsites_converted10_snp.vcf |
+bcftools norm -Ou -m -any |
+  bcftools norm -Ou -f genome.fa |
+  bcftools annotate -Ob -x ID \
+    -I +'%CHROM:%POS:%REF:%ALT' |
+ plink --bcf /dev/stdin \
+    --keep-allele-order \
+    --vcf-idspace-to _ \
+    --memory 30000 \
+    --const-fid \
+    --allow-extra-chr \
+    --make-bed \
+    --out ${i}_allsites_snp_dp10
+
+
+bcftools annotate -Ou -x INFO ${i}_allsites_converted10_novar.vcf |
+bcftools norm -Ou -m -any |
+  bcftools norm -Ou -f genome.fa |
+  bcftools annotate -Ob -x ID \
+    -I +'%CHROM:%POS:%REF:%ALT' |
+ plink --bcf /dev/stdin \
+    --keep-allele-order \
+    --vcf-idspace-to _ \
+    --memory 150000 \
+    --const-fid \
+    --allow-extra-chr \
+    --make-bed \
+    --out ${i}_allsites_novar_dp10
+
+
+plink --memory 30000 -bfile ${i}_allsites_snp_dp10 --allow-extra-chr --recode --tab --out ${i}_allsites_snp_dp10
+plink --memory 150000 -bfile ${i}_allsites_novar_dp10 --allow-extra-chr --recode --tab --out ${i}_allsites_novar_dp10
+
+plink --bfile ${i}_allsites_snp_dp10 --memory 30000 --allow-extra-chr --recode --out ${i}_allsites_snp_dp10
+plink --bfile ${i}_allsites_novar_dp10 --memory 150000 --allow-extra-chr --recode --out ${i}_allsites_novar_dp10
+
+plink --bfile ${i}_allsites_snp_dp10 --memory 30000 --hwe 0.001 --geno 0.1 --allow-extra-chr --make-bed --out ${i}_allsites_snp_dp10_clean
+plink --bfile ${i}_allsites_novar_dp10 --memory 150000 --hwe 0.001 --geno 0.1 --allow-extra-chr --make-bed --out ${i}_allsites_novar_dp10_clean
+
+plink --bfile ${i}_allsites_snp_dp10_clean --memory 30000 --allow-extra-chr --recode vcf-iid --out ${i}_allsites_snp_dp10_clean
+plink --bfile ${i}_allsites_novar_dp10_clean --memory 150000 --allow-extra-chr --recode vcf-iid --out ${i}_allsites_novar_dp10_clean
+
+
+less ${i}_allsites_novar_dp10_clean.vcf | grep -v '#' | wc -l > ${i}_novar
+less ${i}_allsites_snp_dp10_clean.vcf | grep -v '#' | wc -l > ${i}_snps
+
+Rscript make_sfs.R ${i}
+
+sed -i ':a;N;$!ba;s/\n/ /g' ${i}_sfs
+sh make_blueprint.sh ${i} > ${i}_allsites_dp10_vartest_blueprint
+java -cp stairway_plot_es Stairbuilder ${i}_allsites_dp10_vartest_blueprint
+sh ${i}_allsites_dp10_vartest_blueprint.sh
+
+mkdir ${i}
+
+for((j=1; j<=200; j++))
+do
+mkdir ${i}/${j}
+cp ${i}_allsites_dp10_vartest_blueprint ${i}/${j}
+java -cp stairway_plot_es/ Stairbuilder ${i}/${j}/${i}_allsites_dp10_vartest_blueprint
+sh ${i}/${j}/${i}_allsites_dp10_vartest_blueprint.sh
+done
+
+
+
+done

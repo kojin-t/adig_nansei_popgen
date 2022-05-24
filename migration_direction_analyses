@@ -1,0 +1,28 @@
+#!/bin/bash
+
+
+for i in $each_location_pair
+do
+plink --bfile harded5_00101 --memory 10000 --allow-extra-chr --keep ${i}.pop --make-bed --out harded5_${i}
+plink --bfile harded5_${i} --memory 10000 --allow-extra-chr --maf 0.01 --make-bed --out harded5_${i}
+plink --bfile harded5_${i} --memory 10000 --allow-extra-chr --recode vcf-iid --out harded5_${i}
+
+java -Xmx120g -Xms1024m -jar PGDSpider2-cli.jar \
+-inputfile ${i}.vcf \
+-outputfile ${i}.arp \
+-outputformat ARLEQUIN \
+-spid vcf_to_arp.txt.spid
+
+#make 2D-SFS
+arlequin ${i}.arp harded5.ars #Set "ComputeJointSFS=1" and ""NumBootSFS=200" in harded5.ars
+
+done
+
+for h in $each_location_pair
+do
+for ((i=1; i<=200; i++))
+do
+
+fsc26  -t ${i}/${h}/${i}.tpl -n 100000 -d -e ${i}/${h}/${i}.est -M --foldedSFS -0 # an example of ${i}.tpl and ${i}.est are template.tpl and template.est, respectively.
+
+done

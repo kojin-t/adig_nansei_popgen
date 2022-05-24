@@ -1,0 +1,102 @@
+#!/bin/bash
+
+#ppca
+Rscript ppca.R harded5_00101
+
+#calculate pairwised-fst values between each location pair.
+sh pairfst.sh $location1 $location2
+
+for i in $each_location_pair
+do
+less pairfst_$line.log | grep "weighted Fst" | perl -ne '@a=split(/:/,$_);print "$a[1]"' | sed  's/ //g' > $line.weightFst
+done
+
+#calculate genetic diversity measurements
+for i in $each_location
+do
+plink --bfile harded5_snp --memory 10000 --allow-extra-chr --keep ${i}_individuals --make-bed --out harded5_${i}
+plink --bfile harded5_${i} --memory 10000 --allow-extra-chr --indep-pairwise 10 5 0.2 --out range_${i}
+plink --bfile harded5_${i} --memory 10000 --extract range_${i}.prune.in --genome --allow-extra-chr --make-bed --out harded5_${i}pruned
+plink --bfile harded5_${i}pruned --memory 10000 --allow-extra-chr --recode --out harded5_${i}pruned
+plink --bfile harded5_${i}pruned --memory 10000 --maf 0.01 --hwe 0.00001 --geno 0 --allow-extra-chr --make-bed --out harded5_${i}cleaned
+plink --bfile harded5_${i}cleaned --memory 10000 --het --allow-extra-chr --out harded5_${i}cleaned
+plink --bfile harded5_${i}cleaned --memory 10000 --allow-extra-chr --recode vcf-iid --out harded5_${i}cleaned
+
+bgzip -c harded5_${i}cleaned.vcf > harded5_${i}cleaned.vcf.gz
+tabix -p vcf harded5_${i}cleaned.vcf.gz
+
+Rscript calculate_pi.R ${i}
+done
+
+#heterozygosity rates and inbreeding coefficient values
+for i in $each_location
+do
+plink --bfile harded5_00101 --memory 10000 --allow-extra-chr --keep ${i} --make-bed --out harded5_${i}
+plink --bfile harded5_${i} --memory 10000 --allow-extra-chr --maf 0.01 --geno 0 --make-bed --out harded5_${i}
+plink --bfile harded5_${i} --memory 10000 --het --allow-extra-chr --out harded5_${i}
+done
+
+#linkage disequilibrium
+plink --bfile harded5_snp --allow-extra-chr --geno 0.1 --make-bed --out harded5_slim
+for i in $each_location
+do
+plink --bfile harded5_slim --memory 10000 --allow-extra-chr --keep ${i}_individuals.txt --make-bed --out ${i}_5_slimtmp
+plink --bfile ${i}_5_slimtmp --memory 10000 --allow-extra-chr --maf 0.01 --make-bed --out ${i}_5_slim
+plink --bfile ${i}_5_slim --memory 50000 --r2 --ld-window-kb 200 --ld-window 99999 --allow-extra-chr --parallel 1 10 --out ${i}_5_slim
+less ${i}_5_slim.ld* | sed -e 's/\s\+/\t/g' | cut -f2,5,7 > ${i}_ld_table.txt
+Rscript cal_eachpop_r2.R ${i}
+done
+
+#conduct structure analysis
+# "population_file" is a file which each row is indiviual. First column is the Individual ID and the second coulmn is location ID.
+for((h=1; h<=3; h++))
+do
+for i in harded5_00101
+do
+for j in population_file
+do
+for k in harded5_00101
+do
+Rscript strc_prep.R ${i}
+
+sed -e '1d' gt.contra > headcut
+rm gt.contra
+less headcut | cut -d " " -f 2- > GTTemp
+rm headcut
+perl -pe 's/0/0 0/g; s/1/1 0/g; s/2/1 1/g; s/-9/-9 -9/g;' GTTemp > GTTempst
+paste -d " " ${j} GTTempst > GTTempinput
+
+structure -K 1 -i GTTempinput -o ${i}.1.${h}
+structure -K 2 -i GTTempinput -o ${i}.2.${h}
+structure -K 3 -i GTTempinput -o ${i}.3.${h}
+structure -K 4 -i GTTempinput -o ${i}.4.${h}
+structure -K 5 -i GTTempinput -o ${i}.5.${h}
+structure -K 6 -i GTTempinput -o ${i}.6.${h}
+structure -K 7 -i GTTempinput -o ${i}.7.${h}
+structure -K 8 -i GTTempinput -o ${i}.8.${h}
+structure -K 9 -i GTTempinput -o ${i}.9.${h}
+structure -K 10 -i GTTempinput -o ${i}.10.${h} 
+
+# estimate the most appropriate number of K
+structureHarvester.py --dir=path/to/dir/ --out=path/to/dir/ --evanno
+done
+done
+done
+done
+
+#visualize results of structure analysis
+for((i=2; i<=5; i++))
+do
+less harded5_00101${i}.1_f | grep ':' | grep 0 | grep -v '(' | grep -v s | grep -v loc > harded5_00101${i}.1_popQ
+less harded5_00101${i}.1_f | grep ':' | grep 0 | grep '(' | grep -v loc > harded5_00101${i}.1_indQ
+
+distruct \
+-K ${i} \
+-p harded5_00101.${i}.1_popQ \
+-i harded5_00101.${i}.1_indQ \
+-b harded5_00101._name \
+-c harded5_00101.${i}_perm \
+-o harded5_00101.${i}.1_distout
+done
+done
+
