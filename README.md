@@ -9,3 +9,5 @@ Scripts used for population structure analyses can be found in population_struct
 Scripts used for migration direction analyses can be found in migration_direction_analyses.
 
 Scripts used for demographic history analyses can be found in demographic_history_analyes.
+
+Other scripts in this repository are referenced in files decribed above.
