@@ -1,0 +1,256 @@
+#!/bin/bash
+
+for i in $DRR ID
+do
+
+fasterq-dump ${i} -e 8 -p -m 50GB
+
+gzip ${i}_1.fastq
+gzip ${i}_2.fastq
+
+cutadapt \
+-a AGATCGGAAGAGCACACGTCTGAACTCCAGTCA -A AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT --minimum-length=25 \
+--quality-cutoff=20 --cores=8 \
+-o ${i}_1out.fastq \
+-p ${i}_2out.fastq \
+${i}_1.fastq.gz \
+${i}_2.fastq.gz
+
+
+bwa-mem2 mem \
+-M -t 8 \
+-R "@RG\tID:foo\tSM:${i}\tPL:illumina\tLB:library1" \
+genome.fa ${i}_1out.fastq ${i}_2out.fastq > ${i}.sam
+
+samtools fixmate -O bam ${i}.sam ${i}_fixmate.bam
+
+samtools sort -@ 10 -O bam -o ${i}_sorted.bam -T genome.fa ${i}_fixmate.bam
+
+samtools index -@ 10 ${i}_sorted.bam
+
+java -Xmx80g -jar picard.jar BuildBamIndex I=${i}_marked_duplicates.bam
+
+
+java -Xmx80g -jar GenomeAnalysisTK.jar \
+-T RealignerTargetCreator \
+-R genome.fa \
+-I ${i}_marked_duplicates.bam \
+-o ${i}_marked_duplicates.bam.intervals
+
+java -Xmx80g -jar GenomeAnalysisTK.jar \
+-T IndelRealigner \
+-R genome.fa \
+-I ${i}_marked_duplicates.bam \
+-targetIntervals ${i}_marked_duplicates.bam.intervals \
+-o ${i}_realigned.bam
+
+java -Xmx80g -jar GenomeAnalysisTK.jar \
+-T UnifiedGenotyper \
+-R genome.fa \
+-I ${i}_realigned.bam \
+-mbq 20 \
+-glm BOTH \
+-o ${i}_raw_variants.vcf \
+-hets 0.015
+
+java -Xmx20g -jar GenomeAnalysisTK.jar \
+-T SelectVariants \
+-R genome.fa \
+-V ${i}_raw_variants.vcf \
+-selectType INDEL \
+-o ${i}_raw_INDEL.vcf
+
+java -Xmx20g -jar GenomeAnalysisTK.jar \
+-T VariantFiltration \
+-R genome.fa \
+-V ${i}_raw_INDEL.vcf \
+-G_filter "DP < 10 || DP > 200" \
+-G_filterName "DP_10-200" \
+-o ${i}_raw_INDEL_DPfiltered.vcf
+
+java -Xmx20g -jar GenomeAnalysisTK.jar \
+-T SelectVariants \
+-R genome.fa \
+-V ${i}_raw_INDEL_DPfiltered.vcf \
+-o ${i}_raw_indel_passed.vcf \
+--setFilteredGtToNocall \
+--excludeFiltered \
+--excludeNonVariants \
+--maxNOCALLnumber 0
+
+done
+
+java -Xmx20g -jar GenomeAnalysisTK.jar \
+-T CombineVariants \
+-R genome.fa \
+--variant SRR10571340_raw_indel_passed.vcf \
+--variant SRR10571533_raw_indel_passed.vcf \
+--variant SRR10571311_raw_indel_passed.vcf \
+--variant SRR10571567_raw_indel_passed.vcf \
+--variant SRR10571568_raw_indel_passed.vcf \
+-o all_raw_passed_indels.vcf \
+-genotypeMergeOptions UNIQUIFY
+
+java -Xmx20g -jar GenomeAnalysisTK.jar \
+-T SelectVariants \
+-R genome.fa \
+-V all_raw_passed_indels.vcf \
+-o all_known_indels.vcf \
+--maxNOCALLnumber 0
+
+for i in $DRR ID
+do
+
+java -Xmx80g -jar GenomeAnalysisTK.jar \
+-T RealignerTargetCreator \
+-R genome.fa \
+-I ${i}_marked_duplicates.bam \
+-o ${i}_marked_duplicates2.bam.intervals
+
+java -Xmx80g -jar GenomeAnalysisTK.jar \
+-T IndelRealigner \
+-R genome.fa \
+-I ${i}_realigned.bam \
+-targetIntervals ${i}_marked_duplicates2.bam.intervals  \
+-known all_known_indels.vcf \
+-o ${i}_realigned2.bam
+
+for j in $each_scaffold
+do
+gatk-4 --java-options "-Xmx10g" HaplotypeCaller \
+-R genome.fa \
+-I ${i}_realigned.bam \
+-L ${j} \
+-ERC GVCF \
+--pcr-indel-model NONE \
+-O ${i}/${i}_${j}_raw.g.vcf
+done
+done
+
+for j in $each_scaffold
+do
+gatk-4 --java-options "-Xmx30g -Xms30g" GenomicsDBImport \
+-V SRR10571340/SRR10571340_${i}_raw.g.vcf \
+-V SRR10571533/SRR10571533_${i}_raw.g.vcf \
+-V SRR10571311/SRR10571311_${i}_raw.g.vcf \
+-V SRR10571567/SRR10571567_${i}_raw.g.vcf \
+-V SRR10571568/SRR10571568_${i}_raw.g.vcf \
+-L ${i} \
+--batch-size 50 \
+--genomicsdb-workspace-path db/${i}
+
+gatk-4 --java-options "-Xmx10g -Xms10g" GenotypeGVCFs \
+   -R genome.fa \
+   -V gendb://db/${i} \
+   -O vcf/${i}.vcf.gz
+
+gatk-4 --java-options "-Xmx30g -Xms30g" SelectVariants \
+-R genome.fa \
+-V ${i}.vcf.gz \
+--select-type-to-include SNP \
+-O ${i}_snp.vcf.gz
+
+gatk-4 --java-options "-Xmx30g -Xms30g" VariantFiltration \
+-R genome.fa \
+-V ${i}_snp.vcf.gz \
+-O ${i}_snp_hdfiltered.vcf.gz \
+--filter-expression 'MQRankSum < -12.5' --filter-name 'LowMQRankSum' \
+--filter-expression 'ReadPosRankSum < -8.0' --filter-name 'LowReadPosRankSum' \
+--filter-expression 'QD < 2.0' --filter-name 'LowQD' \
+--filter-expression 'FS > 60.0' --filter-name 'HighFisherStrand' \
+--filter-expression 'MQ < 40.0' --filter-name 'LowRMSMappingQuality' \
+--filter-expression 'SOR > 4.0' --filter-name 'HighSOR'
+
+gatk-4 --java-options "-Xmx30g -Xms30g" VariantFiltration \
+-R genome.fa \
+-V ${i}_snp_hdfiltered.vcf.gz \
+-G-filter "DP < 5 || DP > 500" \
+-G-filter-name "DP_5-500" \
+-O ${i}_filtered_dpfiltered5.vcf.gz
+
+gatk-4 --java-options "-Xmx30g -Xms30g" SelectVariants \
+-R genome.fa \
+-V ${i}_filtered_dpfiltered5.vcf.gz \
+--set-filtered-gt-to-nocall \
+--keep-original-ac \
+--exclude-filtered \
+--max-nocall-number 0 \
+-O ${i}_filtered_passed5.vcf.gz
+done
+
+bcftools concat \
+sc0000001_arrow_pilon_filtered_passed5.vcf.gz \
+sc0000002_arrow_pilon_filtered_passed5.vcf.gz \
+sc0000003_arrow_pilon_filtered_passed5.vcf.gz \
+・
+・
+・
+-O v > all_filtered_passed5.vcf
+
+bcftools annotate -Ou -x INFO all_filtered_passed5.vcf |
+bcftools norm -Ou -m -any |
+  bcftools norm -Ou -f genome.fa |
+  bcftools annotate -Ob -x ID \
+    -I +'%CHROM:%POS:%REF:%ALT' |
+plink --bcf /dev/stdin \
+    --keep-allele-order \
+    --vcf-idspace-to _ \
+    --memory 120000 \
+    --const-fid \
+    --allow-extra-chr \
+    --make-bed \
+    --out amil_5_snp
+
+plink --bfile amil_5_snp --memory 50000 --allow-extra-chr --keep-allele-order --recode vcf-iid --out amil_5_snp
+
+perl select_common.pl harded5_00101.vcf amil_5_snp.vcf | grep -v '#' > amil_5_common.txt
+perl select_common.pl amil_5_common.txt harded5_00101.vcf | grep -v '#' > harded5_00101.common
+head -n2000 harded5_00101.vcf | grep '##' > vcf_head.txt
+head -n2000 harded5_00101.vcf | grep CHROM > vcf_headind1.txt
+head -n2000 amil_5_snp.vcf | grep CHROM > vcf_headind2.txt
+
+cat vcf_head.txt vcf_headind1.txt harded5_00101.common > harded5_00101.common.vcf
+
+cat vcf_head.txt vcf_headind2.txt amil_5_common.txt > amil_5_common.vcf
+
+bgzip -c harded5_00101.common.vcf > harded5_00101.common.vcf.gz
+bgzip -c amil_5_common.vcf > amil_5_common.vcf.gz
+bcftools index harded5_00101.common.vcf.gz
+bcftools index amil_5_common.vcf.gz
+bcftools merge harded5_00101.common.vcf.gz amil_5_common.vcf.gz > harded5_withmil.vcf.gz
+
+plink --make-bed --vcf harded5_withmil.vcf.gz --memory 50000 --allow-extra-chr --keep-allele-order --pheno harded5_withmil.clust --out harded5_withmil
+
+less harded5_withmil.bim | sed -e 's/sc0000//g' | sed -e 's/_arrow_pilon//g' | cut -f2- > right
+
+less harded5_withmil.bim | wc -l
+#734391
+
+for((i=1; i<=734391; i++))
+do
+echo "1"
+done > left
+
+paste left right > harded5_withmil.map 
+
+less harded5_withmil.bim | sed -e 's/sc0000//g' | sed -e 's/_arrow_pilon//g' | cut -f1 > right
+cut -f2 harded5_withmil.map >left
+
+paste left right > scaffold_block.txt
+
+convertf -p param.txt
+
+cat param.txt
+# genotypename: harded5_withmil.bed
+# snpname: harded5_withmil.map
+# indivname: harded5_withmil.fam
+# outputformat: EIGENSTRAT
+# genotypeoutname: harded5_withmil.geno
+# snpoutname: harded5_withmil.snp
+# indivoutname: harded5_withmil.ind
+# familynames: NO
+# blockname: scaffold_block.txt
+
+# fit admixture graph
+Rscript fit_admixture_graph.R
+# change the input edge file and repeat this step until you obtain a well fit model.
