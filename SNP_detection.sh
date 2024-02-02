@@ -1,7 +1,5 @@
-
 for i in $each_individual
 do
-
 #quality cut and removal of adaptor sequence
 cutadapt -a AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC -A AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGTAGATCTCGGTGGTCGCCGTATCATT --minimum-length=25 --quality-cutoff=20 --cores=24 \
 -o 0${i}_1_out.fastq \
@@ -153,6 +151,9 @@ java -Xmx5g -jar /home/kinjyo/bin/GenomeAnalysisTK-3.8-0-ge9d806836/GenomeAnalys
 --setFilteredGtToNocall \
 --excludeFiltered \
 --excludeNonVariants
+done
+
+
 
 
 #combine all SNP vcf files
@@ -205,6 +206,8 @@ java -Xmx8g -jar /home/kinjyo/bin/GenomeAnalysisTK-3.8-0-ge9d806836/GenomeAnalys
 --maxNOCALLnumber 150
 
 
+for i in $each_individual
+do
 #create realign targets
 java -Xmx16g -jar GenomeAnalysisTK.jar \
 -T RealignerTargetCreator \
@@ -233,9 +236,10 @@ java -Xmx10g -jar /home/kinjyo/bin/GenomeAnalysisTK-3.8-1-0-gf15c1c3ef/GenomeAna
 -nct 5 \
 -o ${i}_raw_gvcf.g.vcf
 
-
 #change ID
 sed "/^#CHROM/{s/\t[^\t]*/\tDRR0${i}/9}" ${i}_raw_gvcf.g.vcf > ${i}_rewrite.g.vcf
+done
+
 
 
 #genotype all gvcf files
